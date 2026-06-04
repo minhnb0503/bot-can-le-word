@@ -14,7 +14,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler()  # Hiển thị trực tiếp trên màn hình máy chủ Render để dễ check lỗi
+        logging.StreamHandler()
     ]
 )
 
@@ -47,7 +47,7 @@ def set_run_font_times_new_roman(run, size_pt, bold=False):
     rFonts.set(qn('w:eastAsia'), 'Times New Roman')
 
 def format_docx(input_path, output_path):
-    """Hàm căn lề, chỉnh font, giãn dòng đúng chuẩn yêu cầu đồ án trong ảnh"""
+    """Hàm căn lề, chỉnh font, giãn dòng đúng chuẩn yêu cầu đồ án và sửa lỗi giãn chữ"""
     logging.info(f"Bắt đầu xử lý file: {input_path}")
     doc = Document(input_path)
     
@@ -62,25 +62,39 @@ def format_docx(input_path, output_path):
 
     # Duyệt qua từng đoạn văn bản trong file để ép định dạng
     for paragraph in doc.paragraphs:
+        # Loại bỏ ký tự xuống dòng mềm (\v, \n) ở đầu/cuối đoạn để trị dứt điểm bệnh giãn chữ của Word
+        for run in paragraph.runs:
+            if run.text:
+                run.text = run.text.replace('\v', ' ').replace('\n', ' ')
+                
         text = paragraph.text.strip()
         if not text:
             continue
             
-        # Nhận diện tiêu đề Chương (Bắt đầu bằng chữ chương hoặc viết hoa toàn bộ)
+        # --- BỘ LỌC THÔNG MINH NHẬN DIỆN TIÊU ĐỀ CHƯƠNG / VẤN ĐỀ ---
         is_chapter = False
-        if text.upper().startswith("CHƯƠNG") or (text.isupper() and len(text) < 100):
+        # Trường hợp 1: Bắt đầu bằng chữ "CHƯƠNG"
+        if text.upper().startswith("CHƯƠNG"):
             is_chapter = True
-            paragraph.text = text.upper()
+        # Trường hợp 2: File gốc đang được chủ ý Căn giữa sẵn
+        elif paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER:
+            is_chapter = True
+        # Trường hợp 3: Dòng ngắn, viết hoa toàn bộ hoặc có cài hiệu ứng All Caps trong Word
+        elif len(text) < 100:
+            has_all_caps_run = any(run.font.all_caps for run in paragraph.runs)
+            if text.isupper() or has_all_caps_run:
+                is_chapter = True
 
-        # Nhận diện mục con bằng số (Ví dụ: 1., 2., 1.1, 1.2...)
+        # --- BỘ LỌC NHẬN DIỆN MỤC CON 1, 2, 1.1, 1.2... ---
         is_section = False
         if not is_chapter and re.match(r'^(\d+(\.\d+)*\.?)\s+', text):
             is_section = True
 
-        # Tiến hành áp định dạng chuẩn vào từng loại văn bản
+        # --- TIẾN HÀNH ÁP ĐỊNH DẠNG CHUẨN ---
         if is_chapter:
-            # Tên chương: Chữ in hoa, cao 16, đậm (Bold), căn lề giữa (center)
+            # Tên chương/Vấn đề: Chữ in hoa, cao 16, đậm (Bold), căn lề giữa (center)
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            paragraph.text = text.upper()  # Ép ký tự thành viết hoa thật sự thay vì dùng hiệu ứng
             paragraph.paragraph_format.first_line_indent = None
             paragraph.paragraph_format.space_before = Pt(12)
             paragraph.paragraph_format.space_after = Pt(6)
@@ -90,8 +104,11 @@ def format_docx(input_path, output_path):
                 set_run_font_times_new_roman(run, 16, bold=True)
                 
         elif is_section:
-            # Các mục 1, 2...: Chữ thường, cỡ 13, đậm (Bold), để justify
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            # Các mục 1, 2...: Chữ thường, cỡ 13, đậm (Bold), bảo hiểm dòng ngắn để tránh dãn chữ
+            if len(text) < 50:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            else:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             paragraph.paragraph_format.first_line_indent = None
             paragraph.paragraph_format.space_before = Pt(6)
             paragraph.paragraph_format.space_after = Pt(3)
@@ -101,9 +118,13 @@ def format_docx(input_path, output_path):
                 set_run_font_times_new_roman(run, 13, bold=True)
                 
         else:
-            # Các nội dung khác: Cỡ chữ 13, Justify, first line (thụt lề) 1cm
-            # Giãn dòng Multiple 1.3, spacing before 6pt
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            # Các nội dung khác: Cỡ chữ 13, Thụt lề (first line) 1cm, Giãn dòng Multiple 1.3, spacing before 6pt
+            # Nếu dòng text quá ngắn (dòng đơn độc lập), để lề Trái để tuyệt đối không bị lỗi kéo dãn chữ
+            if len(text) < 50:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            else:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                
             paragraph.paragraph_format.first_line_indent = Cm(1)
             paragraph.paragraph_format.space_before = Pt(6)
             paragraph.paragraph_format.space_after = Pt(0)
@@ -113,14 +134,14 @@ def format_docx(input_path, output_path):
                 set_run_font_times_new_roman(run, 13, bold=False)
 
     doc.save(output_path)
-    logging.info(f"Đã định dạng xong và lưu file sạch: {output_path}")
+    logging.info(f"Đã xử lý lỗi giãn chữ thành công: {output_path}")
 
 # --- 5. ĐIỀU HƯỚNG BOT TELEGRAM ---
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
-        "👋 Xin chào! Tôi là Bot tự động căn lề báo cáo Đồ án Viễn thông.\n\n"
-        "📥 Hãy gửi cho tôi file Word (.docx) của bài báo cáo. Tôi sẽ tự động chỉnh sửa đúng chuẩn lề, font chữ, thụt dòng đầu, và kích thước mục con theo yêu cầu!"
+        "👋 Xin chào! Tôi là Bot tự động căn lề báo cáo Đồ án Viễn thông (Bản nâng cấp sửa lỗi giãn chữ).\n\n"
+        "📥 Hãy gửi cho tôi file Word (.docx) của bạn. Tôi sẽ tự động chỉnh sửa đúng chuẩn đồ án."
     )
     bot.reply_to(message, welcome_text)
 
@@ -130,16 +151,14 @@ def handle_docs(message):
     output_filename = ""
     try:
         file_name = message.document.file_name
-        logging.info(f"Nhận yêu cầu từ Chat ID {message.chat.id}, file: '{file_name}'")
+        logging.info(f"Nhận file '{file_name}' từ Chat ID: {message.chat.id}")
         
-        # Chỉ chấp nhận file đuôi .docx
         if not file_name.endswith('.docx'):
             bot.reply_to(message, "❌ Vui lòng chỉ gửi file định dạng Word (.docx) thôi nhé bạn ơi!")
             return
             
-        bot.reply_to(message, "🔄 Đang nhận file và tự động căn chỉnh lề + font chữ, vui lòng chờ giây lát...")
+        bot.reply_to(message, "🔄 Đang tiến hành bóc tách lỗi giãn chữ và căn chỉnh lại toàn bộ file, vui lòng đợi vài giây...")
         
-        # Tải file từ Telegram về máy chủ tạm thời
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
@@ -149,19 +168,16 @@ def handle_docs(message):
         with open(input_filename, 'wb') as new_file:
             new_file.write(downloaded_file)
             
-        # Tiến hành căn chỉnh lại file Word
         format_docx(input_filename, output_filename)
         
-        # Gửi trả file sạch về cho người dùng trên Telegram
         with open(output_filename, 'rb') as formatted_doc:
-            bot.send_document(message.chat.id, formatted_doc, caption="✅ Đã định dạng xong xuôi theo đúng yêu cầu đồ án trường bạn rồi nhé!")
+            bot.send_document(message.chat.id, formatted_doc, caption="✅ Đã sửa lỗi giãn chữ và căn lề xong xuôi theo chuẩn đồ án!")
             
     except Exception as e:
         logging.error(f"LỖI HỆ THỐNG: {str(e)}", exc_info=True)
-        bot.reply_to(message, "❌ Có lỗi xảy ra trong quá trình xử lý file. Bạn hãy kiểm tra lại cấu trúc file nhé.")
+        bot.reply_to(message, "❌ Có lỗi cấu trúc đặc biệt xảy ra trong file. Bạn hãy thử lưu lại file Word đó rồi gửi lại nhé.")
         
     finally:
-        # Xóa các file rác tạm thời để máy chủ không bị đầy dung lượng
         if input_filename and os.path.exists(input_filename):
             os.remove(input_filename)
         if output_filename and os.path.exists(output_filename):
@@ -170,9 +186,6 @@ def handle_docs(message):
 # --- 6. CHẠY ĐỒNG THỜI WEB SERVER VÀ BOT TELEGRAM ---
 if __name__ == '__main__':
     logging.info("--- HỆ THỐNG BOT BẮT ĐẦU KÍCH HOẠT ---")
-    # Tạo luồng chạy web server phụ độc lập để giữ kết nối với Render không bị ngắt
     server_thread = Thread(target=run_web_server)
     server_thread.start()
-    
-    # Bật cổng lắng nghe của Telegram Bot liên tục
     bot.infinity_polling()
