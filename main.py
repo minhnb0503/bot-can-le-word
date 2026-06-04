@@ -42,7 +42,6 @@ def set_run_font_times_new_roman(run, size_pt=None, bold=None):
     if bold is not None:
         run.bold = bold
         
-    # Ép cấu trúc XML Word nhận diện chuẩn Unicode tiếng Việt
     rPr = run._element.get_or_add_rPr()
     rFonts = rPr.get_or_add_rFonts()
     rFonts.set(qn('w:ascii'), 'Times New Roman')
@@ -55,7 +54,7 @@ def format_docx(input_path, output_path):
     logging.info(f"Bắt đầu xử lý cấu trúc file: {input_path}")
     doc = Document(input_path)
     
-    # Cấu hình khổ giấy A4 và Căn lề chuẩn: Trái 30mm, Phải 15mm, Trên 20mm, Dưới 20mm
+    # Cấu hình khổ giấy A4 và Căn lề chuẩn
     for section in doc.sections:
         section.page_width = Mm(210)
         section.page_height = Mm(297)
@@ -64,50 +63,49 @@ def format_docx(input_path, output_path):
         section.left_margin = Mm(30)
         section.right_margin = Mm(15)
 
-    # Biến đánh dấu: Khi nào chưa gặp Mục lục/Lời mở đầu/Chương 1 thì CHƯA kích hoạt căn lề để bảo vệ trang bìa
     start_strict_formatting = False
-    
-    # Từ khóa nhận diện các phần bắt buộc phải sang trang mới tinh
     major_sections = ["MỤC LỤC", "LỜI MỞ ĐẦU", "KẾT LUẬN", "TÀI LIỆU THAM KHẢO", "PHỤ LỤC", "DANH MỤC"]
 
     for paragraph in doc.paragraphs:
-        # Xóa bỏ các ký tự xuống dòng ép buộc (\v, \n) làm dãn chữ tai hại
-        for run in paragraph.runs:
-            if run.text:
-                run.text = run.text.replace('\v', ' ').replace('\n', ' ')
-                
         text = paragraph.text.strip()
         if not text:
             continue
             
-        # Kiểm tra xem đã hết Trang bìa + Bảng phân công nhiệm vụ chưa để bật định dạng báo cáo
         text_upper = text.upper()
-        if any(sec in text_upper for sec in major_sections) or text_upper.startswith("CHƯƠNG"):
+        
+        # Công thức Regex siêu chặt chẽ để nhận diện chuẩn xác CHƯƠNG 1, CHƯƠNG 2...
+        is_exact_chapter = bool(re.match(r'^CHƯƠNG\s+\d+', text_upper))
+
+        # Đánh dấu đã qua trang bìa
+        if is_exact_chapter or any(text_upper == sec for sec in major_sections):
             start_strict_formatting = True
 
-        # GIAI ĐOẠN 1: NẾU ĐANG Ở TRANG BÌA HOẶC BẢNG NHIỆM VỤ -> CHỈ ĐỔI FONT, GIỮ NGUYÊN CỠ CHỮ VÀ VỊ TRÍ
-        if not start_strict_formatting:
+        # KIỂM TRA MỤC LỤC TỰ ĐỘNG: Nếu là Mục lục, TUYỆT ĐỐI KHÔNG can thiệp lề lối
+        is_toc = paragraph.style.name.startswith('TOC') or paragraph.style.name.startswith('toc')
+
+        # GIAI ĐOẠN 1: BẢO VỆ TRANG BÌA, BẢNG NHIỆM VỤ VÀ MỤC LỤC TỰ ĐỘNG
+        if not start_strict_formatting or is_toc:
             for run in paragraph.runs:
-                set_run_font_times_new_roman(run) # Giữ nguyên định dạng gốc của bìa
+                set_run_font_times_new_roman(run) 
             continue
 
-        # GIAI ĐOẠN 2: ĐÃ VÀO NỘI DUNG BÁO CÁO CHÍNH -> ÁP DỤNG QUY TẮC NGHIÊM NGẶT
-        is_chapter = False
-        # Kiểm tra xem đoạn này có phải Tiêu đề lớn (Chương hoặc Mục lục...) hay không
-        if text_upper.startswith("CHƯƠNG") or any(text_upper == sec for sec in major_sections):
-            is_chapter = True
+        # GIAI ĐOẠN 2: XỬ LÝ NỘI DUNG CHÍNH (Xóa ký tự dãn chữ)
+        for run in paragraph.runs:
+            if run.text:
+                run.text = run.text.replace('\v', ' ').replace('\n', ' ')
+        text = paragraph.text.strip() # Cập nhật lại text sau khi xóa
 
-        # Kiểm tra xem có phải mục con dạng số (1., 1.1, 2.1.1...) hay không
+        # NHẬN DIỆN TIÊU ĐỀ LỚN
+        is_chapter = is_exact_chapter or any(text_upper == sec for sec in major_sections)
+
+        # NHẬN DIỆN MỤC CON 1., 1.1, 1.2...
         is_section = False
         if not is_chapter and re.match(r'^(\d+(\.\d+)*\.?)\s+', text):
             is_section = True
 
-        # ÁP ĐỊNH DẠNG CHI TIẾT THEO TỪNG THÀNH PHẦN
+        # ÁP ĐỊNH DẠNG CHI TIẾT
         if is_chapter:
-            # TỰ ĐỘNG NGẮT TRANG: Ép phần này phải nhảy sang đầu trang mới
             paragraph.paragraph_format.page_break_before = True
-            
-            # Định dạng: Chữ in hoa, cao 16, Đậm, căn lề giữa
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             paragraph.text = text.upper()
             paragraph.paragraph_format.first_line_indent = None
@@ -119,12 +117,9 @@ def format_docx(input_path, output_path):
                 set_run_font_times_new_roman(run, size_pt=16, bold=True)
                 
         elif is_section:
-            # Mục con 1.1, 1.2...: Chữ thường, cỡ 13, Đậm, căn đều Justify (Bảo hiểm dòng ngắn tránh dãn chữ)
             paragraph.paragraph_format.page_break_before = False
-            if len(text) < 60:
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            else:
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            # Dòng ngắn giữ lề trái, dòng dài căn đều 2 bên
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT if len(text) < 60 else WD_ALIGN_PARAGRAPH.JUSTIFY
             paragraph.paragraph_format.first_line_indent = None
             paragraph.paragraph_format.space_before = Pt(6)
             paragraph.paragraph_format.space_after = Pt(3)
@@ -134,13 +129,8 @@ def format_docx(input_path, output_path):
                 set_run_font_times_new_roman(run, size_pt=13, bold=True)
                 
         else:
-            # Văn bản thường: Cỡ 13, Justify, thụt dòng đầu 1cm, giãn dòng 1.3, space before 6pt
             paragraph.paragraph_format.page_break_before = False
-            if len(text) < 60:
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            else:
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT if len(text) < 60 else WD_ALIGN_PARAGRAPH.JUSTIFY
             paragraph.paragraph_format.first_line_indent = Cm(1)
             paragraph.paragraph_format.space_before = Pt(6)
             paragraph.paragraph_format.space_after = Pt(0)
@@ -149,7 +139,7 @@ def format_docx(input_path, output_path):
             for run in paragraph.runs:
                 set_run_font_times_new_roman(run, size_pt=13, bold=False)
 
-    # Duyệt qua toàn bộ bảng biểu (Tables) có trong file để ép font Times New Roman chuẩn luôn
+    # Đảm bảo các bảng biểu cũng được dùng chuẩn font Times New Roman
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -158,14 +148,14 @@ def format_docx(input_path, output_path):
                         set_run_font_times_new_roman(run)
 
     doc.save(output_path)
-    logging.info(f"Đã xuất file hoàn mỹ: {output_path}")
+    logging.info(f"Đã xuất file báo cáo đồ án hoàn chỉnh: {output_path}")
 
 # --- 6. ĐIỀU HƯỚNG BOT TELEGRAM ---
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
-        "👋 Xin chào! Tôi là Bot tự động căn lề báo cáo Đồ án Viễn thông (Bản siêu nâng cấp bảo vệ Trang Bìa).\n\n"
-        "📥 Hãy gửi cho tôi file Word (.docx) của bạn. Tôi sẽ tự động sửa chuẩn chỉnh lề lối từ đầu đến cuối."
+        "👋 Xin chào! Tôi là Bot tự động căn lề báo cáo Đồ án.\n\n"
+        "📥 Hãy gửi cho tôi file Word (.docx) của bạn. Tôi sẽ tự động sửa chuẩn chỉnh lề lối, bảo vệ trang bìa và ngắt trang tự động."
     )
     bot.reply_to(message, welcome_text)
 
@@ -181,7 +171,7 @@ def handle_docs(message):
             bot.reply_to(message, "❌ Vui lòng chỉ gửi file định dạng Word (.docx) thôi nhé bạn ơi!")
             return
             
-        bot.reply_to(message, "🔄 Bot đang phân tích cấu trúc, giữ nguyên trang bìa và tự động nhảy trang chuẩn chỉnh. Vui lòng đợi...")
+        bot.reply_to(message, "🔄 Bot đang phân tích cấu trúc, bảo vệ Mục lục và chỉnh sửa nội dung. Vui lòng đợi...")
         
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
@@ -195,7 +185,7 @@ def handle_docs(message):
         format_docx(input_filename, output_filename)
         
         with open(output_filename, 'rb') as formatted_doc:
-            bot.send_document(message.chat.id, formatted_doc, caption="✅ Đã căn chỉnh lề, bảo vệ trang bìa và ngắt trang tự động hoàn tất!")
+            bot.send_document(message.chat.id, formatted_doc, caption="✅ Đã hoàn tất! Bot đã áp dụng khiên bảo vệ Mục lục và căn lề siêu chuẩn.")
             
     except Exception as e:
         logging.error(f"LỖI HỆ THỐNG: {str(e)}", exc_info=True)
